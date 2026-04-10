@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Baccarat Analyzer Pro</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body class="p-4 md:p-6">
+    <div class="max-w-5xl mx-auto">
+        <header class="text-center mb-6">
+            <h1 class="text-2xl md:text-3xl font-bold text-yellow-500 mb-1 italic uppercase tracking-widest">
+                AI BACCARAT PREDICTOR
+            </h1>
+            <p class="text-slate-500 text-[10px] md:text-xs uppercase tracking-wider">
+                Real-time Statistical Engine v3.0
+            </p>
+            <p class="text-slate-400 text-xs mt-2">
+                ระบบแสดงผลเชิงสถิติและแพทเทิร์น เพื่อใช้งานดูข้อมูลประกอบ
+            </p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <!-- Left -->
+            <aside class="lg:col-span-1 space-y-4">
+                <!-- Prediction -->
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2 class="panel-title">Prediction</h2>
+                        <span id="status-badge" class="badge badge-idle">Idle</span>
+                    </div>
+
+                    <div id="next-prediction" class="text-center py-5 min-h-[88px] flex flex-col items-center justify-center">
+                        <span class="text-slate-500 text-xs italic">Waiting for data...</span>
+                    </div>
+
+                    <div class="mt-4">
+                        <div class="flex justify-between text-[10px] mb-1">
+                            <span class="text-slate-500">CONFIDENCE</span>
+                            <span id="confidence-pct" class="text-yellow-500 font-bold">0%</span>
+                        </div>
+                        <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden">
+                            <div
+                                id="confidence-bar"
+                                class="bg-yellow-500 h-full transition-all duration-500"
+                                style="width: 0%"
+                            ></div>
+                        </div>
+                    </div>
+
+                    <p id="prediction-note" class="text-[11px] text-slate-400 mt-3 leading-5 text-center">
+                        ต้องมีข้อมูลอย่างน้อย 3 ตาก่อนเริ่มประมวลผล
+                    </p>
+                </section>
+
+                <!-- Betting Plan -->
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2 class="panel-title">Betting Plan</h2>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="info-row">
+                            <span class="label">STEP</span>
+                            <span id="step-count" class="value">1</span>
+                        </div>
+
+                        <div class="info-row">
+                            <span class="label">AMOUNT</span>
+                            <span id="bet-amount" class="value text-yellow-400">100.00</span>
+                        </div>
+
+                        <div class="info-row">
+                            <span class="label">BASE BET</span>
+                            <span id="base-bet-display" class="value text-cyan-400">100.00</span>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2">
+                            <button id="reset-step-btn" class="btn btn-secondary">
+                                Reset Step
+                            </button>
+                            <button id="set-base-bet-btn" class="btn btn-secondary">
+                                Set Base Bet
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Quick Summary -->
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2 class="panel-title">Summary</h2>
+                    </div>
+
+                    <div class="space-y-3 text-sm">
+                        <div class="summary-item">
+                            <span>Last 6 Results</span>
+                            <span id="last-six" class="font-bold text-slate-200">-</span>
+                        </div>
+                        <div class="summary-item">
+                            <span>Last Prediction</span>
+                            <span id="last-prediction-text" class="font-bold text-slate-200">-</span>
+                        </div>
+                        <div class="summary-item">
+                            <span>History Saved</span>
+                            <span id="storage-status" class="font-bold text-emerald-400">Yes</span>
+                        </div>
+                    </div>
+                </section>
+            </aside>
+
+            <!-- Right -->
+            <main class="lg:col-span-2 space-y-4">
+                <!-- Roadmap -->
+                <section class="panel panel-roadmap">
+                    <div class="flex justify-between items-center mb-2 px-1 gap-2">
+                        <h2 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest italic">
+                            Roadmap (Bead Plate)
+                        </h2>
+                        <span id="total-hands" class="text-[10px] text-slate-600 font-bold">TOTAL: 0</span>
+                    </div>
+
+                    <div id="road-map" class="bead-plate"></div>
+                </section>
+
+                <!-- Input -->
+                <section class="panel">
+                    <div class="grid grid-cols-3 gap-3">
+                        <button data-result="P" class="result-btn bg-blue-600 hover:bg-blue-700">
+                            P
+                        </button>
+                        <button data-result="T" class="result-btn bg-green-600 hover:bg-green-700">
+                            T
+                        </button>
+                        <button data-result="B" class="result-btn bg-red-600 hover:bg-red-700">
+                            B
+                        </button>
+                    </div>
+
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+                        <button id="undo-btn" class="btn btn-secondary">
+                            UNDO
+                        </button>
+                        <button id="clear-btn" class="btn btn-danger">
+                            CLEAR ALL
+                        </button>
+                        <button id="export-btn" class="btn btn-primary">
+                            EXPORT
+                        </button>
+                        <button id="import-btn" class="btn btn-primary">
+                            IMPORT
+                        </button>
+                    </div>
+                </section>
+
+                <!-- Counters -->
+                <section class="grid grid-cols-3 gap-4">
+                    <div class="score-box">
+                        <div class="text-blue-500 text-2xl font-black" id="p-count">0</div>
+                        <div class="score-label">Player</div>
+                    </div>
+
+                    <div class="score-box">
+                        <div class="text-green-500 text-2xl font-black" id="t-count">0</div>
+                        <div class="score-label">Tie</div>
+                    </div>
+
+                    <div class="score-box">
+                        <div class="text-red-500 text-2xl font-black" id="b-count">0</div>
+                        <div class="score-label">Banker</div>
+                    </div>
+                </section>
+
+                <!-- Info -->
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2 class="panel-title">How it works</h2>
+                    </div>
+                    <ul class="list-disc pl-5 text-sm text-slate-300 space-y-1 leading-6">
+                        <li>เก็บผลลัพธ์แต่ละตาเป็น P / T / B</li>
+                        <li>คำนวณสถิติรวมและแสดง Bead Plate</li>
+                        <li>ใช้ pattern logic แบบง่ายเพื่อแสดงฝั่งถัดไป</li>
+                        <li>มีระบบเดินเงินตาม step และจำข้อมูลไว้ในเครื่อง</li>
+                    </ul>
+                </section>
+            </main>
+        </div>
+    </div>
+<!-- Base Bet Modal -->
+<div id="base-bet-modal" class="modal-backdrop hidden">
+    <div class="custom-modal">
+        <div class="custom-modal-header">
+            <h3>ตั้งค่า Base Bet</h3>
+            <button id="close-base-bet-modal" class="icon-close" type="button">×</button>
+        </div>
+
+        <div class="custom-modal-body">
+            <label for="base-bet-input" class="modal-label">
+                กรอกจำนวนเงินเริ่มต้น
+            </label>
+            <input
+                id="base-bet-input"
+                type="number"
+                min="1"
+                step="0.01"
+                class="modal-input"
+                placeholder="เช่น 1000"
+            />
+            <p class="modal-help">
+                จำนวนนี้จะถูกใช้เป็นทุนเริ่มต้นของการคำนวณเดิมพัน
+            </p>
+        </div>
+
+        <div class="custom-modal-footer">
+            <button id="cancel-base-bet-btn" class="btn btn-secondary" type="button">
+                ยกเลิก
+            </button>
+            <button id="save-base-bet-btn" class="btn btn-primary" type="button">
+                บันทึก
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Clear History Modal -->
+<div id="clear-history-modal" class="modal-backdrop hidden">
+    <div class="custom-modal custom-modal-sm">
+        <div class="custom-modal-header">
+            <h3>ยืนยันการล้างข้อมูล</h3>
+            <button id="close-clear-modal" class="icon-close" type="button">×</button>
+        </div>
+
+        <div class="custom-modal-body">
+            <p class="modal-text">
+                คุณต้องการล้างประวัติทั้งหมดใช่ไหม?
+            </p>
+            <p class="modal-help text-red-300">
+                การล้างจะรีเซ็ต History, Prediction และ Step ทั้งหมด
+            </p>
+        </div>
+
+        <div class="custom-modal-footer">
+            <button id="cancel-clear-btn" class="btn btn-secondary" type="button">
+                ยกเลิก
+            </button>
+            <button id="confirm-clear-btn" class="btn btn-danger" type="button">
+                ล้างข้อมูล
+            </button>
+        </div>
+    </div>
+</div>
+
+    <script src="script.js"></script>
+</body>
+</html>
