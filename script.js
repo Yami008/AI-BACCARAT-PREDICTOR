@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'baccarat_analyzer_state_v4';
+const STORAGE_KEY = 'baccarat_analyzer_state_v5';
 
 const DEFAULT_PATTERN_STATS = () => ({
     dragon: { win: 0, lose: 0 },
@@ -7,7 +7,8 @@ const DEFAULT_PATTERN_STATS = () => ({
     shortTerm: { win: 0, lose: 0 },
     longTerm: { win: 0, lose: 0 },
     repetition: { win: 0, lose: 0 },
-    last3: { win: 0, lose: 0 }
+    last3: { win: 0, lose: 0 },
+    tie: { win: 0, lose: 0 }
 });
 
 const state = {
@@ -165,6 +166,7 @@ function undo() {
 
     if (removed !== 'T' && state.predictionResults.length > 0) {
         const lastRecord = state.predictionResults.pop();
+
         if (lastRecord && Array.isArray(lastRecord.patterns)) {
             for (const patternName of new Set(lastRecord.patterns)) {
                 ensurePatternStat(patternName);
@@ -175,6 +177,7 @@ function undo() {
                 }
             }
         }
+
         updatePredictionStats();
     }
 
@@ -418,7 +421,8 @@ function calculateAdvancedPrediction() {
         analyzeShortTerm(recentHistory),
         analyzeLongTerm(fullHistory),
         detectRepetition(recentHistory),
-        analyzeLastThree(recentHistory)
+        analyzeLastThree(recentHistory),
+        analyzeTiePattern(state.history)
     ];
 
     for (const result of patternResults) {
@@ -449,6 +453,12 @@ function calculateAdvancedPrediction() {
         const dominance = totalScore > 0 ? maxScore / totalScore : 0.5;
         confidence = Math.round(50 + (dominance - 0.5) * 80 + Math.min(8, usedPatterns.length * 1.5));
         confidence = Math.min(95, Math.max(50, confidence));
+    }
+
+    const tieCountRecent = state.history.slice(-10).filter(x => x === 'T').length;
+    if (tieCountRecent >= 3) {
+        confidence = Math.max(50, confidence - 5);
+        reasons.push(`มีเสมอ ${tieCountRecent} ครั้งใน 10 ตาล่าสุด → ลดความมั่นใจลง`);
     }
 
     return {
@@ -607,13 +617,11 @@ function detectRepetition(history) {
 
     if (pCount === bCount) return null;
 
-    const suggestedSide = pCount > bCount ? 'P' : 'B';
-
     return {
         patternName: 'repetition',
-        suggestedSide: suggestedSide,
+        suggestedSide: pCount > bCount ? 'P' : 'B',
         baseWeight: 16,
-        reason: `Pattern ${pattern} เคยตามด้วย ${suggestedSide} มากกว่า`
+        reason: `Pattern ${pattern} เคยตามด้วย ${pCount > bCount ? 'P' : 'B'} มากกว่า`
     };
 }
 
@@ -658,6 +666,38 @@ function analyzeLastThree(history) {
         };
     }
 
+    return null;
+}
+
+function analyzeTiePattern(history) {
+    if (history.length < 3) return null;
+
+    const last5 = history.slice(-5);
+    const tieCount = last5.filter(x => x === 'T').length;
+
+    if (tieCount === 0) return null;
+
+    const lastNonTie = getLastNonTieSide(history);
+    if (!lastNonTie) return null;
+
+    let baseWeight = 0;
+
+    if (tieCount === 1) baseWeight = 4;
+    else if (tieCount === 2) baseWeight = 7;
+    else baseWeight = 10;
+
+    return {
+        patternName: 'tie',
+        suggestedSide: lastNonTie,
+        baseWeight,
+        reason: `พบเสมอ ${tieCount} ครั้งใน 5 ตาล่าสุด → ใช้ฝั่งก่อนหน้า (${lastNonTie}) เป็นแนวโน้ม`
+    };
+}
+
+function getLastNonTieSide(history = state.history) {
+    for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i] !== 'T') return history[i];
+    }
     return null;
 }
 
@@ -706,7 +746,7 @@ function setBadge(text, type) {
 function formatMoney(number) {
     return Number(number).toLocaleString(undefined, {
         minimumFractionDigits: 2,
-        maximumFractionDigits: 2
+        maximumFractionDigits: 2,
     });
 }
 
@@ -744,6 +784,7 @@ function loadState() {
 
         const incomingPatternStats = parsed.patternStats && typeof parsed.patternStats === 'object' ? parsed.patternStats : {};
         state.patternStats = DEFAULT_PATTERN_STATS();
+
         for (const key of Object.keys(state.patternStats)) {
             if (incomingPatternStats[key]) {
                 state.patternStats[key].win = Number(incomingPatternStats[key].win) || 0;
@@ -817,6 +858,7 @@ function importHistory() {
 
                 const incomingPatternStats = parsed.patternStats && typeof parsed.patternStats === 'object' ? parsed.patternStats : {};
                 state.patternStats = DEFAULT_PATTERN_STATS();
+
                 for (const key of Object.keys(state.patternStats)) {
                     if (incomingPatternStats[key]) {
                         state.patternStats[key].win = Number(incomingPatternStats[key].win) || 0;
