@@ -1,11 +1,23 @@
-const STORAGE_KEY = 'baccarat_analyzer_state_v3';
+const STORAGE_KEY = 'baccarat_analyzer_state_v4';
+
+const DEFAULT_PATTERN_STATS = () => ({
+    dragon: { win: 0, lose: 0 },
+    zigzag: { win: 0, lose: 0 },
+    streak: { win: 0, lose: 0 },
+    shortTerm: { win: 0, lose: 0 },
+    longTerm: { win: 0, lose: 0 },
+    repetition: { win: 0, lose: 0 },
+    last3: { win: 0, lose: 0 }
+});
 
 const state = {
     history: [],
     currentStep: 1,
     lastPredictedSide: null,
+    lastPredictionMeta: null,
     baseBet: 100,
-    predictionResults: [], // เก็บผลลัพธ์การทำนาย {predicted: 'P', actual: 'B', correct: false}
+    predictionResults: [],
+    patternStats: DEFAULT_PATTERN_STATS(),
     stats: {
         totalPredictions: 0,
         correctPredictions: 0,
@@ -15,7 +27,6 @@ const state = {
 };
 
 const MAX_STEP = 8;
-
 const elements = {};
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -42,8 +53,7 @@ function cacheElements() {
     elements.lastSix = document.getElementById('last-six');
     elements.lastPredictionText = document.getElementById('last-prediction-text');
     elements.storageStatus = document.getElementById('storage-status');
-    
-    // Prediction Stats
+
     elements.winRate = document.getElementById('win-rate');
     elements.correctCount = document.getElementById('correct-count');
     elements.wrongCount = document.getElementById('wrong-count');
@@ -59,28 +69,28 @@ function cacheElements() {
 
     elements.resultButtons = document.querySelectorAll('[data-result]');
     elements.baseBetModal = document.getElementById('base-bet-modal');
-elements.baseBetInput = document.getElementById('base-bet-input');
-elements.closeBaseBetModal = document.getElementById('close-base-bet-modal');
-elements.cancelBaseBetBtn = document.getElementById('cancel-base-bet-btn');
-elements.saveBaseBetBtn = document.getElementById('save-base-bet-btn');
+    elements.baseBetInput = document.getElementById('base-bet-input');
+    elements.closeBaseBetModal = document.getElementById('close-base-bet-modal');
+    elements.cancelBaseBetBtn = document.getElementById('cancel-base-bet-btn');
+    elements.saveBaseBetBtn = document.getElementById('save-base-bet-btn');
 
-elements.clearHistoryModal = document.getElementById('clear-history-modal');
-elements.closeClearModal = document.getElementById('close-clear-modal');
-elements.cancelClearBtn = document.getElementById('cancel-clear-btn');
-elements.confirmClearBtn = document.getElementById('confirm-clear-btn');
+    elements.clearHistoryModal = document.getElementById('clear-history-modal');
+    elements.closeClearModal = document.getElementById('close-clear-modal');
+    elements.cancelClearBtn = document.getElementById('cancel-clear-btn');
+    elements.confirmClearBtn = document.getElementById('confirm-clear-btn');
 }
 
 function bindEvents() {
     elements.resultButtons.forEach((button) => {
         button.addEventListener('click', () => {
-            const result = button.dataset.result;
-            record(result);
+            record(button.dataset.result);
         });
     });
+
     elements.baseBetInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-        saveBaseBetFromModal();
-    }
+        if (event.key === 'Enter') {
+            saveBaseBetFromModal();
+        }
     });
 
     elements.undoBtn.addEventListener('click', undo);
@@ -91,6 +101,7 @@ function bindEvents() {
     elements.importBtn.addEventListener('click', importHistory);
 
     document.addEventListener('keydown', handleKeyboardShortcuts);
+
     elements.closeBaseBetModal.addEventListener('click', closeBaseBetModal);
     elements.cancelBaseBetBtn.addEventListener('click', closeBaseBetModal);
     elements.saveBaseBetBtn.addEventListener('click', saveBaseBetFromModal);
@@ -100,15 +111,11 @@ function bindEvents() {
     elements.confirmClearBtn.addEventListener('click', confirmClearHistory);
 
     elements.baseBetModal.addEventListener('click', (event) => {
-        if (event.target === elements.baseBetModal) {
-            closeBaseBetModal();
-        }
+        if (event.target === elements.baseBetModal) closeBaseBetModal();
     });
 
     elements.clearHistoryModal.addEventListener('click', (event) => {
-        if (event.target === elements.clearHistoryModal) {
-            closeClearHistoryModal();
-        }
+        if (event.target === elements.clearHistoryModal) closeClearHistoryModal();
     });
 }
 
@@ -124,22 +131,21 @@ function handleKeyboardShortcuts(event) {
 function record(result) {
     if (!['P', 'T', 'B'].includes(result)) return;
 
-    // ตรวจสอบผลการทำนายครั้งก่อน (ถ้ามี prediction และผลไม่ใช่ Tie)
-    if (state.lastPredictedSide && result !== 'T') {
-        const isCorrect = result === state.lastPredictedSide;
-        
-        // บันทึกผลการทำนาย
+    if (state.lastPredictionMeta && result !== 'T') {
+        const isCorrect = result === state.lastPredictionMeta.side;
+
         state.predictionResults.push({
-            predicted: state.lastPredictedSide,
+            predicted: state.lastPredictionMeta.side,
             actual: result,
             correct: isCorrect,
+            patterns: Array.isArray(state.lastPredictionMeta.usedPatterns) ? [...state.lastPredictionMeta.usedPatterns] : [],
+            confidence: state.lastPredictionMeta.confidence || 0,
             timestamp: new Date().toISOString()
         });
-        
-        // อัปเดตสถิติ
+
+        updatePatternStats(state.lastPredictionMeta.usedPatterns, isCorrect);
         updatePredictionStats();
-        
-        // เดินเงิน
+
         if (isCorrect) {
             state.currentStep = 1;
         } else {
@@ -155,15 +161,32 @@ function record(result) {
 function undo() {
     if (state.history.length === 0) return;
 
-    state.history.pop();
+    const removed = state.history.pop();
+
+    if (removed !== 'T' && state.predictionResults.length > 0) {
+        const lastRecord = state.predictionResults.pop();
+        if (lastRecord && Array.isArray(lastRecord.patterns)) {
+            for (const patternName of new Set(lastRecord.patterns)) {
+                ensurePatternStat(patternName);
+                if (lastRecord.correct) {
+                    state.patternStats[patternName].win = Math.max(0, state.patternStats[patternName].win - 1);
+                } else {
+                    state.patternStats[patternName].lose = Math.max(0, state.patternStats[patternName].lose - 1);
+                }
+            }
+        }
+        updatePredictionStats();
+    }
 
     if (state.currentStep > 1) {
         state.currentStep--;
+    } else {
+        state.currentStep = 1;
     }
 
-    // ถ้าเหลือข้อมูลน้อยเกินไป ให้รีเซ็ตฝั่งที่เคยทำนาย
     if (state.history.length < 3) {
         state.lastPredictedSide = null;
+        state.lastPredictionMeta = null;
     }
 
     renderAll();
@@ -236,6 +259,7 @@ function renderMoneyManagement() {
 function renderPrediction() {
     if (state.history.length < 3) {
         state.lastPredictedSide = null;
+        state.lastPredictionMeta = null;
 
         elements.nextPrediction.innerHTML = `
             <span class="text-slate-500 text-xs italic">Waiting for data...</span>
@@ -247,7 +271,6 @@ function renderPrediction() {
                 ต้องมีข้อมูลอย่างน้อย 3 ตาก่อนเริ่มประมวลผล
             </div>
         `;
-
         setBadge('Idle', 'idle');
         elements.lastPredictionText.textContent = '-';
         return;
@@ -255,6 +278,7 @@ function renderPrediction() {
 
     const prediction = calculateAdvancedPrediction();
     state.lastPredictedSide = prediction.side;
+    state.lastPredictionMeta = prediction;
 
     const colorClass = prediction.side === 'P' ? 'text-blue-500' : 'text-red-500';
 
@@ -267,8 +291,7 @@ function renderPrediction() {
 
     elements.confidencePct.textContent = `${prediction.confidence}%`;
     elements.confidenceBar.style.width = `${prediction.confidence}%`;
-    
-    // แสดง note แบบมีหัวข้อ
+
     const noteLines = prediction.note.split(' | ');
     if (noteLines.length > 1) {
         elements.predictionNote.innerHTML = `
@@ -290,7 +313,7 @@ function renderPrediction() {
             </div>
         `;
     }
-    
+
     elements.lastPredictionText.textContent = prediction.side === 'P' ? 'PLAYER' : 'BANKER';
 
     if (prediction.confidence >= 80) {
@@ -314,16 +337,12 @@ function updateActionButtons() {
     elements.clearBtn.disabled = !hasHistory;
 }
 
-// ========================================
-// PREDICTION STATS
-// ========================================
-
 function updatePredictionStats() {
     const total = state.predictionResults.length;
     const correct = state.predictionResults.filter(r => r.correct).length;
     const wrong = total - correct;
     const winRate = total > 0 ? Math.round((correct / total) * 100) : 0;
-    
+
     state.stats = {
         totalPredictions: total,
         correctPredictions: correct,
@@ -332,15 +351,33 @@ function updatePredictionStats() {
     };
 }
 
+function updatePatternStats(patternNames, isCorrect) {
+    if (!Array.isArray(patternNames) || patternNames.length === 0) return;
+
+    for (const patternName of new Set(patternNames)) {
+        ensurePatternStat(patternName);
+        if (isCorrect) {
+            state.patternStats[patternName].win += 1;
+        } else {
+            state.patternStats[patternName].lose += 1;
+        }
+    }
+}
+
+function ensurePatternStat(patternName) {
+    if (!state.patternStats[patternName]) {
+        state.patternStats[patternName] = { win: 0, lose: 0 };
+    }
+}
+
 function renderPredictionStats() {
-    if (!elements.winRate) return; // ถ้ายังไม่มี element ให้ข้าม
-    
+    if (!elements.winRate) return;
+
     elements.totalPredictions.textContent = state.stats.totalPredictions;
     elements.correctCount.textContent = state.stats.correctPredictions;
     elements.wrongCount.textContent = state.stats.wrongPredictions;
     elements.winRate.textContent = `${state.stats.winRate}%`;
-    
-    // เปลี่ยนสีตาม win rate
+
     if (state.stats.winRate >= 60) {
         elements.winRate.className = 'text-2xl font-black text-green-400';
     } else if (state.stats.winRate >= 50) {
@@ -350,91 +387,56 @@ function renderPredictionStats() {
     } else {
         elements.winRate.className = 'text-2xl font-black text-slate-400';
     }
-    
-    // แสดง 10 ผลล่าสุด
+
     const last10 = state.predictionResults.slice(-10);
     if (last10.length > 0) {
         elements.last10Results.innerHTML = last10.map(result => {
             const icon = result.correct ? '✓' : '✗';
             const color = result.correct ? 'text-green-400' : 'text-red-400';
-            return `<span class="${color} font-bold text-sm" title="${result.predicted} → ${result.actual}">${icon}</span>`;
+            const patternInfo = Array.isArray(result.patterns) && result.patterns.length > 0
+                ? ` (${result.patterns.join(', ')})`
+                : '';
+            return `<span class="${color} font-bold text-sm" title="${result.predicted} → ${result.actual}${patternInfo}">${icon}</span>`;
         }).join('');
     } else {
         elements.last10Results.innerHTML = '<span class="text-slate-600 text-xs">-</span>';
     }
 }
 
-// ========================================
-// ADVANCED PREDICTION ENGINE
-// ========================================
-
 function calculateAdvancedPrediction() {
-    const scores = {
-        P: 0,
-        B: 0
-    };
-    
+    const scores = { P: 0, B: 0 };
     const reasons = [];
-    
-    // 1. Dragon Pattern Detection (ไพ่ออกฝั่งเดียวกันติดกัน 4+ ตา)
-    const dragonResult = detectDragon();
-    if (dragonResult.detected) {
-        const opposite = dragonResult.side === 'P' ? 'B' : 'P';
-        scores[opposite] += 25;
-        reasons.push(`Dragon ${dragonResult.side} ติดกัน ${dragonResult.count} ตา → เด้งไปฝั่งตรงข้าม`);
+    const usedPatterns = [];
+
+    const recentHistory = getNonTieHistory(15);
+    const fullHistory = getNonTieHistory();
+
+    const patternResults = [
+        detectDragon(recentHistory),
+        detectZigzag(recentHistory),
+        analyzeStreak(recentHistory),
+        analyzeShortTerm(recentHistory),
+        analyzeLongTerm(fullHistory),
+        detectRepetition(recentHistory),
+        analyzeLastThree(recentHistory)
+    ];
+
+    for (const result of patternResults) {
+        if (!result || !result.patternName || !result.suggestedSide || !result.baseWeight) continue;
+
+        const adaptiveWeight = getAdaptiveWeight(result.patternName, result.baseWeight);
+        scores[result.suggestedSide] += adaptiveWeight;
+        reasons.push(`${result.reason} [${result.patternName}: ${adaptiveWeight}]`);
+        usedPatterns.push(result.patternName);
     }
-    
-    // 2. Zigzag Pattern Detection (สลับ P-B-P-B)
-    const zigzagResult = detectZigzag();
-    if (zigzagResult.detected) {
-        scores[zigzagResult.nextSide] += 20;
-        reasons.push(`Zigzag Pattern ตรวจพบ → ต่อด้วย ${zigzagResult.nextSide}`);
-    }
-    
-    // 3. Streak Analysis (ตรวจจับแนวโน้มออกฝั่งเดียวกัน)
-    const streakResult = analyzeStreak();
-    if (streakResult.weight > 0) {
-        scores[streakResult.oppositeSide] += streakResult.weight;
-        reasons.push(streakResult.reason);
-    }
-    
-    // 4. Short-term Trend (5 ตาล่าสุด)
-    const shortTermResult = analyzeShortTerm();
-    if (shortTermResult.weight > 0) {
-        scores[shortTermResult.suggestedSide] += shortTermResult.weight;
-        reasons.push(shortTermResult.reason);
-    }
-    
-    // 5. Long-term Probability (สถิติรวมทั้งหมด)
-    const longTermResult = analyzeLongTerm();
-    if (longTermResult.weight > 0) {
-        scores[longTermResult.suggestedSide] += longTermResult.weight;
-        reasons.push(longTermResult.reason);
-    }
-    
-    // 6. Repetition Pattern (รูปแบบซ้ำในประวัติ)
-    const repetitionResult = detectRepetition();
-    if (repetitionResult.weight > 0) {
-        scores[repetitionResult.suggestedSide] += repetitionResult.weight;
-        reasons.push(repetitionResult.reason);
-    }
-    
-    // 7. Last 3 Pattern Match
-    const last3Result = analyzeLastThree();
-    if (last3Result.weight > 0) {
-        scores[last3Result.suggestedSide] += last3Result.weight;
-        reasons.push(last3Result.reason);
-    }
-    
-    // คำนวณผลรวม
+
     const totalP = scores.P;
     const totalB = scores.B;
-    
+
     let predictedSide;
     let confidence;
-    
+
     if (totalP === totalB) {
-        // คะแนนเท่ากัน ให้เลือกจากฝั่งที่ออกน้อยกว่าในภาพรวม
         const pCount = countResult('P');
         const bCount = countResult('B');
         predictedSide = pCount <= bCount ? 'P' : 'B';
@@ -443,44 +445,60 @@ function calculateAdvancedPrediction() {
     } else {
         predictedSide = totalP > totalB ? 'P' : 'B';
         const maxScore = Math.max(totalP, totalB);
-        const minScore = Math.min(totalP, totalB);
-        const diff = maxScore - minScore;
-        
-        // คำนวณ confidence จากส่วนต่าง (scale 50-95%)
-        confidence = Math.min(95, 50 + Math.floor(diff * 0.6));
+        const totalScore = totalP + totalB;
+        const dominance = totalScore > 0 ? maxScore / totalScore : 0.5;
+        confidence = Math.round(50 + (dominance - 0.5) * 80 + Math.min(8, usedPatterns.length * 1.5));
+        confidence = Math.min(95, Math.max(50, confidence));
     }
-    
+
     return {
         side: predictedSide,
         confidence: confidence,
-        note: reasons.length > 0 ? reasons.join(' | ') : 'วิเคราะห์จากข้อมูลทั่วไป'
+        note: reasons.length > 0 ? reasons.join(' | ') : 'วิเคราะห์จากข้อมูลทั่วไป',
+        usedPatterns: [...new Set(usedPatterns)],
+        timestamp: new Date().toISOString(),
+        scores: { ...scores }
     };
 }
 
-// ตรวจจับ Dragon (ฝั่งเดียวติดกัน 4+ ตา)
-function detectDragon() {
-    const streak = getLatestStreak();
-    
-    if (streak.count >= 4 && streak.side !== 'T') {
-        return {
-            detected: true,
-            side: streak.side,
-            count: streak.count
-        };
-    }
-    
-    return { detected: false };
+function getAdaptiveWeight(patternName, baseWeight) {
+    ensurePatternStat(patternName);
+
+    const stat = state.patternStats[patternName];
+    const total = stat.win + stat.lose;
+
+    if (total < 5) return baseWeight;
+
+    const winRate = stat.win / total;
+
+    let scale = 0.6 + (winRate * 0.9);
+    if (winRate >= 0.7) scale += 0.15;
+    if (winRate <= 0.4) scale -= 0.1;
+
+    return Math.max(1, Math.round(baseWeight * scale));
 }
 
-// ตรวจจับ Zigzag (P-B-P-B สลับกัน)
-function detectZigzag() {
-    if (state.history.length < 4) return { detected: false };
-    
-    const last4 = state.history.slice(-4).filter(x => x !== 'T');
-    
-    if (last4.length < 4) return { detected: false };
-    
-    // ตรวจสอบว่าสลับกันหรือไม่
+function detectDragon(history) {
+    const streak = getLatestStreak(history);
+
+    if (streak.count >= 4 && streak.side !== 'T') {
+        return {
+            patternName: 'dragon',
+            suggestedSide: streak.side === 'P' ? 'B' : 'P',
+            baseWeight: 25,
+            reason: `Dragon ${streak.side} ติดกัน ${streak.count} ตา → เด้งฝั่งตรงข้าม`
+        };
+    }
+
+    return null;
+}
+
+function detectZigzag(history) {
+    if (history.length < 4) return null;
+
+    const last4 = history.slice(-4);
+    if (last4.length < 4) return null;
+
     let isZigzag = true;
     for (let i = 1; i < last4.length; i++) {
         if (last4[i] === last4[i - 1]) {
@@ -488,165 +506,179 @@ function detectZigzag() {
             break;
         }
     }
-    
+
     if (isZigzag) {
         const lastSide = last4[last4.length - 1];
-        const nextSide = lastSide === 'P' ? 'B' : 'P';
         return {
-            detected: true,
-            nextSide: nextSide
+            patternName: 'zigzag',
+            suggestedSide: lastSide === 'P' ? 'B' : 'P',
+            baseWeight: 20,
+            reason: 'Zigzag Pattern ตรวจพบ → ต่อฝั่งสลับ'
         };
     }
-    
-    return { detected: false };
+
+    return null;
 }
 
-// วิเคราะห์ Streak (ถ้าออกฝั่งเดียวติดกัน 2-3 ตา)
-function analyzeStreak() {
-    const streak = getLatestStreak();
-    
+function analyzeStreak(history) {
+    const streak = getLatestStreak(history);
+
     if (streak.count >= 2 && streak.count <= 3 && streak.side !== 'T') {
-        const oppositeSide = streak.side === 'P' ? 'B' : 'P';
         return {
-            oppositeSide: oppositeSide,
-            weight: 15,
+            patternName: 'streak',
+            suggestedSide: streak.side === 'P' ? 'B' : 'P',
+            baseWeight: 15,
             reason: `Streak ${streak.side} x${streak.count} → เตรียมเด้ง`
         };
     }
-    
-    return { weight: 0 };
+
+    return null;
 }
 
-// วิเคราะห์ระยะสั้น (5 ตาล่าสุด)
-function analyzeShortTerm() {
-    if (state.history.length < 5) return { weight: 0 };
-    
-    const last5 = state.history.slice(-5);
+function analyzeShortTerm(history) {
+    if (history.length < 5) return null;
+
+    const last5 = history.slice(-5);
     const pCount = last5.filter(x => x === 'P').length;
     const bCount = last5.filter(x => x === 'B').length;
-    
+
     if (pCount >= 4) {
         return {
+            patternName: 'shortTerm',
             suggestedSide: 'B',
-            weight: 18,
-            reason: `5 ตาล่าสุด P ออก ${pCount} ครั้ง → ลดลงไป B`
+            baseWeight: 18,
+            reason: `5 ตาล่าสุด P ออก ${pCount} ครั้ง → เอน B`
         };
     }
-    
+
     if (bCount >= 4) {
         return {
+            patternName: 'shortTerm',
             suggestedSide: 'P',
-            weight: 18,
-            reason: `5 ตาล่าสุด B ออก ${bCount} ครั้ง → ลดลงไป P`
+            baseWeight: 18,
+            reason: `5 ตาล่าสุด B ออก ${bCount} ครั้ง → เอน P`
         };
     }
-    
-    return { weight: 0 };
+
+    return null;
 }
 
-// วิเคราะห์ระยะยาว (สถิติรวม)
-function analyzeLongTerm() {
-    const pCount = countResult('P');
-    const bCount = countResult('B');
-    const total = state.history.length;
-    
-    if (total < 10) return { weight: 0 };
-    
+function analyzeLongTerm(history) {
+    if (history.length < 10) return null;
+
+    const pCount = history.filter(x => x === 'P').length;
+    const bCount = history.filter(x => x === 'B').length;
+    const total = history.length;
+
     const diff = Math.abs(pCount - bCount);
     const diffPercent = (diff / total) * 100;
-    
-    // ถ้าห่างกันมาก (>15%) ให้เอนฝั่งที่น้อยกว่า
+
     if (diffPercent > 15) {
-        const suggestedSide = pCount < bCount ? 'P' : 'B';
         return {
-            suggestedSide: suggestedSide,
-            weight: 12,
-            reason: `ภาพรวม P:${pCount} B:${bCount} → สมดุลไปฝั่ง ${suggestedSide}`
+            patternName: 'longTerm',
+            suggestedSide: pCount < bCount ? 'P' : 'B',
+            baseWeight: 12,
+            reason: `ภาพรวม P:${pCount} B:${bCount} → สมดุลไปฝั่ง ${pCount < bCount ? 'P' : 'B'}`
         };
     }
-    
-    return { weight: 0 };
+
+    return null;
 }
 
-// ตรวจจับรูปแบบซ้ำ
-function detectRepetition() {
-    if (state.history.length < 8) return { weight: 0 };
-    
-    const last3 = state.history.slice(-3).join('');
-    const beforeLast3 = state.history.slice(-6, -3).join('');
-    
-    // ถ้า 3 ตาล่าสุดเหมือนกับ 3 ตาก่อนหน้า
-    if (last3 === beforeLast3 && state.history.length >= 7) {
-        const next = state.history[state.history.length - 6 + 3]; // ตาที่ตามหลัง pattern เก่า
-        if (next && next !== 'T') {
-            return {
-                suggestedSide: next,
-                weight: 16,
-                reason: `Pattern ${last3} ซ้ำ → ตามด้วย ${next}`
-            };
+function detectRepetition(history) {
+    if (history.length < 6) return null;
+
+    const pattern = history.slice(-3).join('');
+    const followUps = [];
+
+    for (let i = 0; i <= history.length - 6; i++) {
+        if (history.slice(i, i + 3).join('') === pattern) {
+            const next = history[i + 3];
+            if (next === 'P' || next === 'B') {
+                followUps.push(next);
+            }
         }
     }
-    
-    return { weight: 0 };
+
+    if (followUps.length === 0) return null;
+
+    const pCount = followUps.filter(x => x === 'P').length;
+    const bCount = followUps.filter(x => x === 'B').length;
+
+    if (pCount === bCount) return null;
+
+    const suggestedSide = pCount > bCount ? 'P' : 'B';
+
+    return {
+        patternName: 'repetition',
+        suggestedSide: suggestedSide,
+        baseWeight: 16,
+        reason: `Pattern ${pattern} เคยตามด้วย ${suggestedSide} มากกว่า`
+    };
 }
 
-// วิเคราะห์ 3 ตาล่าสุด
-function analyzeLastThree() {
-    const last3 = state.history.slice(-3).join('');
-    
-    // PPP -> B
+function analyzeLastThree(history) {
+    if (history.length < 3) return null;
+
+    const last3 = history.slice(-3).join('');
+
     if (last3 === 'PPP') {
         return {
+            patternName: 'last3',
             suggestedSide: 'B',
-            weight: 22,
+            baseWeight: 22,
             reason: 'PPP ติดกัน → เด้ง B'
         };
     }
-    
-    // BBB -> P
+
     if (last3 === 'BBB') {
         return {
+            patternName: 'last3',
             suggestedSide: 'P',
-            weight: 22,
+            baseWeight: 22,
             reason: 'BBB ติดกัน → เด้ง P'
         };
     }
-    
-    // PBP -> B
+
     if (last3 === 'PBP') {
         return {
+            patternName: 'last3',
             suggestedSide: 'B',
-            weight: 14,
+            baseWeight: 14,
             reason: 'PBP รูปแบบ → ต่อด้วย B'
         };
     }
-    
-    // BPB -> P
+
     if (last3 === 'BPB') {
         return {
+            patternName: 'last3',
             suggestedSide: 'P',
-            weight: 14,
+            baseWeight: 14,
             reason: 'BPB รูปแบบ → ต่อด้วย P'
         };
     }
-    
-    return { weight: 0 };
+
+    return null;
 }
 
-// ========================================
-// HELPER FUNCTIONS
-// ========================================
+function getNonTieHistory(limit = null) {
+    const filtered = state.history.filter(item => item !== 'T');
+    if (typeof limit === 'number') {
+        return filtered.slice(-limit);
+    }
+    return filtered;
+}
 
-function getLatestStreak() {
-    if (state.history.length === 0) {
+function getLatestStreak(history = getNonTieHistory()) {
+    if (history.length === 0) {
         return { side: null, count: 0 };
     }
 
-    const last = state.history[state.history.length - 1];
+    const last = history[history.length - 1];
     let count = 0;
 
-    for (let i = state.history.length - 1; i >= 0; i--) {
-        if (state.history[i] === last) {
+    for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i] === last) {
             count++;
         } else {
             break;
@@ -674,13 +706,22 @@ function setBadge(text, type) {
 function formatMoney(number) {
     return Number(number).toLocaleString(undefined, {
         minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
+        maximumFractionDigits: 2
     });
 }
 
 function saveState() {
     try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+            history: state.history,
+            currentStep: state.currentStep,
+            lastPredictedSide: state.lastPredictedSide,
+            lastPredictionMeta: state.lastPredictionMeta,
+            baseBet: state.baseBet,
+            predictionResults: state.predictionResults,
+            patternStats: state.patternStats,
+            stats: state.stats
+        }));
     } catch (error) {
         console.error('Save failed:', error);
         elements.storageStatus.textContent = 'No';
@@ -694,16 +735,27 @@ function loadState() {
 
         const parsed = JSON.parse(raw);
 
-        state.history = Array.isArray(parsed.history) ? parsed.history : [];
+        state.history = Array.isArray(parsed.history) ? parsed.history.filter(x => ['P', 'T', 'B'].includes(x)) : [];
         state.currentStep = Number.isFinite(parsed.currentStep) ? parsed.currentStep : 1;
         state.lastPredictedSide = parsed.lastPredictedSide || null;
+        state.lastPredictionMeta = parsed.lastPredictionMeta || null;
         state.baseBet = Number.isFinite(parsed.baseBet) && parsed.baseBet > 0 ? parsed.baseBet : 100;
         state.predictionResults = Array.isArray(parsed.predictionResults) ? parsed.predictionResults : [];
-        
-        // คำนวณสถิติใหม่จากข้อมูลที่โหลด
+
+        const incomingPatternStats = parsed.patternStats && typeof parsed.patternStats === 'object' ? parsed.patternStats : {};
+        state.patternStats = DEFAULT_PATTERN_STATS();
+        for (const key of Object.keys(state.patternStats)) {
+            if (incomingPatternStats[key]) {
+                state.patternStats[key].win = Number(incomingPatternStats[key].win) || 0;
+                state.patternStats[key].lose = Number(incomingPatternStats[key].lose) || 0;
+            }
+        }
+
         updatePredictionStats();
     } catch (error) {
         console.error('Load failed:', error);
+        state.patternStats = DEFAULT_PATTERN_STATS();
+        updatePredictionStats();
     }
 }
 
@@ -716,12 +768,17 @@ function exportHistory() {
     const payload = {
         history: state.history,
         currentStep: state.currentStep,
+        lastPredictedSide: state.lastPredictedSide,
+        lastPredictionMeta: state.lastPredictionMeta,
         baseBet: state.baseBet,
-        exportedAt: new Date().toISOString(),
+        predictionResults: state.predictionResults,
+        patternStats: state.patternStats,
+        stats: state.stats,
+        exportedAt: new Date().toISOString()
     };
 
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
-        type: 'application/json',
+        type: 'application/json'
     });
 
     const url = URL.createObjectURL(blob);
@@ -754,8 +811,20 @@ function importHistory() {
                 state.history = parsed.history.filter((item) => ['P', 'T', 'B'].includes(item));
                 state.currentStep = Number.isFinite(parsed.currentStep) ? parsed.currentStep : 1;
                 state.baseBet = Number.isFinite(parsed.baseBet) && parsed.baseBet > 0 ? parsed.baseBet : 100;
-                state.lastPredictedSide = null;
+                state.lastPredictedSide = parsed.lastPredictedSide || null;
+                state.lastPredictionMeta = parsed.lastPredictionMeta || null;
+                state.predictionResults = Array.isArray(parsed.predictionResults) ? parsed.predictionResults : [];
 
+                const incomingPatternStats = parsed.patternStats && typeof parsed.patternStats === 'object' ? parsed.patternStats : {};
+                state.patternStats = DEFAULT_PATTERN_STATS();
+                for (const key of Object.keys(state.patternStats)) {
+                    if (incomingPatternStats[key]) {
+                        state.patternStats[key].win = Number(incomingPatternStats[key].win) || 0;
+                        state.patternStats[key].lose = Number(incomingPatternStats[key].lose) || 0;
+                    }
+                }
+
+                updatePredictionStats();
                 renderAll();
                 saveState();
             } catch (error) {
@@ -797,7 +866,9 @@ function confirmClearHistory() {
     state.history = [];
     state.currentStep = 1;
     state.lastPredictedSide = null;
+    state.lastPredictionMeta = null;
     state.predictionResults = [];
+    state.patternStats = DEFAULT_PATTERN_STATS();
     state.stats = {
         totalPredictions: 0,
         correctPredictions: 0,
