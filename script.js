@@ -5,6 +5,13 @@ const state = {
     currentStep: 1,
     lastPredictedSide: null,
     baseBet: 100,
+    predictionResults: [], // เก็บผลลัพธ์การทำนาย {predicted: 'P', actual: 'B', correct: false}
+    stats: {
+        totalPredictions: 0,
+        correctPredictions: 0,
+        wrongPredictions: 0,
+        winRate: 0
+    }
 };
 
 const MAX_STEP = 8;
@@ -35,6 +42,13 @@ function cacheElements() {
     elements.lastSix = document.getElementById('last-six');
     elements.lastPredictionText = document.getElementById('last-prediction-text');
     elements.storageStatus = document.getElementById('storage-status');
+    
+    // Prediction Stats
+    elements.winRate = document.getElementById('win-rate');
+    elements.correctCount = document.getElementById('correct-count');
+    elements.wrongCount = document.getElementById('wrong-count');
+    elements.totalPredictions = document.getElementById('total-predictions');
+    elements.last10Results = document.getElementById('last-10-results');
 
     elements.undoBtn = document.getElementById('undo-btn');
     elements.clearBtn = document.getElementById('clear-btn');
@@ -110,9 +124,23 @@ function handleKeyboardShortcuts(event) {
 function record(result) {
     if (!['P', 'T', 'B'].includes(result)) return;
 
-    // เดินเงินเฉพาะกรณีมี prediction ก่อนหน้า และผลไม่ใช่ Tie
+    // ตรวจสอบผลการทำนายครั้งก่อน (ถ้ามี prediction และผลไม่ใช่ Tie)
     if (state.lastPredictedSide && result !== 'T') {
-        if (result === state.lastPredictedSide) {
+        const isCorrect = result === state.lastPredictedSide;
+        
+        // บันทึกผลการทำนาย
+        state.predictionResults.push({
+            predicted: state.lastPredictedSide,
+            actual: result,
+            correct: isCorrect,
+            timestamp: new Date().toISOString()
+        });
+        
+        // อัปเดตสถิติ
+        updatePredictionStats();
+        
+        // เดินเงิน
+        if (isCorrect) {
             state.currentStep = 1;
         } else {
             state.currentStep = state.currentStep >= MAX_STEP ? 1 : state.currentStep + 1;
@@ -168,6 +196,7 @@ function renderAll() {
     renderStats();
     renderMoneyManagement();
     renderPrediction();
+    renderPredictionStats();
     renderSummary();
     updateActionButtons();
 }
@@ -283,6 +312,56 @@ function updateActionButtons() {
     const hasHistory = state.history.length > 0;
     elements.undoBtn.disabled = !hasHistory;
     elements.clearBtn.disabled = !hasHistory;
+}
+
+// ========================================
+// PREDICTION STATS
+// ========================================
+
+function updatePredictionStats() {
+    const total = state.predictionResults.length;
+    const correct = state.predictionResults.filter(r => r.correct).length;
+    const wrong = total - correct;
+    const winRate = total > 0 ? Math.round((correct / total) * 100) : 0;
+    
+    state.stats = {
+        totalPredictions: total,
+        correctPredictions: correct,
+        wrongPredictions: wrong,
+        winRate: winRate
+    };
+}
+
+function renderPredictionStats() {
+    if (!elements.winRate) return; // ถ้ายังไม่มี element ให้ข้าม
+    
+    elements.totalPredictions.textContent = state.stats.totalPredictions;
+    elements.correctCount.textContent = state.stats.correctPredictions;
+    elements.wrongCount.textContent = state.stats.wrongPredictions;
+    elements.winRate.textContent = `${state.stats.winRate}%`;
+    
+    // เปลี่ยนสีตาม win rate
+    if (state.stats.winRate >= 60) {
+        elements.winRate.className = 'text-2xl font-black text-green-400';
+    } else if (state.stats.winRate >= 50) {
+        elements.winRate.className = 'text-2xl font-black text-yellow-400';
+    } else if (state.stats.winRate > 0) {
+        elements.winRate.className = 'text-2xl font-black text-red-400';
+    } else {
+        elements.winRate.className = 'text-2xl font-black text-slate-400';
+    }
+    
+    // แสดง 10 ผลล่าสุด
+    const last10 = state.predictionResults.slice(-10);
+    if (last10.length > 0) {
+        elements.last10Results.innerHTML = last10.map(result => {
+            const icon = result.correct ? '✓' : '✗';
+            const color = result.correct ? 'text-green-400' : 'text-red-400';
+            return `<span class="${color} font-bold text-sm" title="${result.predicted} → ${result.actual}">${icon}</span>`;
+        }).join('');
+    } else {
+        elements.last10Results.innerHTML = '<span class="text-slate-600 text-xs">-</span>';
+    }
 }
 
 // ========================================
@@ -619,6 +698,10 @@ function loadState() {
         state.currentStep = Number.isFinite(parsed.currentStep) ? parsed.currentStep : 1;
         state.lastPredictedSide = parsed.lastPredictedSide || null;
         state.baseBet = Number.isFinite(parsed.baseBet) && parsed.baseBet > 0 ? parsed.baseBet : 100;
+        state.predictionResults = Array.isArray(parsed.predictionResults) ? parsed.predictionResults : [];
+        
+        // คำนวณสถิติใหม่จากข้อมูลที่โหลด
+        updatePredictionStats();
     } catch (error) {
         console.error('Load failed:', error);
     }
@@ -714,6 +797,13 @@ function confirmClearHistory() {
     state.history = [];
     state.currentStep = 1;
     state.lastPredictedSide = null;
+    state.predictionResults = [];
+    state.stats = {
+        totalPredictions: 0,
+        correctPredictions: 0,
+        wrongPredictions: 0,
+        winRate: 0
+    };
 
     renderAll();
     saveState();
