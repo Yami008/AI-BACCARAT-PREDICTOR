@@ -213,14 +213,18 @@ function renderPrediction() {
         `;
         elements.confidencePct.textContent = '0%';
         elements.confidenceBar.style.width = '0%';
-        elements.predictionNote.textContent = 'ต้องมีข้อมูลอย่างน้อย 3 ตาก่อนเริ่มประมวลผล';
+        elements.predictionNote.innerHTML = `
+            <div class="text-center text-slate-400">
+                ต้องมีข้อมูลอย่างน้อย 3 ตาก่อนเริ่มประมวลผล
+            </div>
+        `;
 
         setBadge('Idle', 'idle');
         elements.lastPredictionText.textContent = '-';
         return;
     }
 
-    const prediction = calculatePredictionFromHistory();
+    const prediction = calculateAdvancedPrediction();
     state.lastPredictedSide = prediction.side;
 
     const colorClass = prediction.side === 'P' ? 'text-blue-500' : 'text-red-500';
@@ -234,13 +238,38 @@ function renderPrediction() {
 
     elements.confidencePct.textContent = `${prediction.confidence}%`;
     elements.confidenceBar.style.width = `${prediction.confidence}%`;
-    elements.predictionNote.textContent = prediction.note;
+    
+    // แสดง note แบบมีหัวข้อ
+    const noteLines = prediction.note.split(' | ');
+    if (noteLines.length > 1) {
+        elements.predictionNote.innerHTML = `
+            <div class="space-y-1.5">
+                <div class="text-yellow-400 font-bold text-[10px] mb-2 tracking-wider">📊 ANALYSIS FACTORS:</div>
+                ${noteLines.map(line => `
+                    <div class="flex items-start gap-2">
+                        <span class="text-yellow-500 mt-0.5">•</span>
+                        <span class="flex-1">${line}</span>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    } else {
+        elements.predictionNote.innerHTML = `
+            <div class="flex items-start gap-2">
+                <span class="text-yellow-500">•</span>
+                <span class="flex-1">${prediction.note}</span>
+            </div>
+        `;
+    }
+    
     elements.lastPredictionText.textContent = prediction.side === 'P' ? 'PLAYER' : 'BANKER';
 
     if (prediction.confidence >= 80) {
         setBadge('Hot', 'hot');
-    } else {
+    } else if (prediction.confidence >= 65) {
         setBadge('Ready', 'ready');
+    } else {
+        setBadge('Idle', 'idle');
     }
 }
 
@@ -256,83 +285,278 @@ function updateActionButtons() {
     elements.clearBtn.disabled = !hasHistory;
 }
 
-function calculatePredictionFromHistory() {
-    const recent = state.history.slice(-3).join('');
-    const lastFive = state.history.slice(-5);
-    const pCount = countResult('P');
-    const bCount = countResult('B');
+// ========================================
+// ADVANCED PREDICTION ENGINE
+// ========================================
 
-    if (recent === 'BBB') {
-        return {
-            side: 'P',
-            confidence: 85,
-            note: 'พบ Banker ติดกัน 3 ครั้ง จึงเด้งฝั่งตรงข้ามตาม logic ที่ตั้งไว้',
-        };
+function calculateAdvancedPrediction() {
+    const scores = {
+        P: 0,
+        B: 0
+    };
+    
+    const reasons = [];
+    
+    // 1. Dragon Pattern Detection (ไพ่ออกฝั่งเดียวกันติดกัน 4+ ตา)
+    const dragonResult = detectDragon();
+    if (dragonResult.detected) {
+        const opposite = dragonResult.side === 'P' ? 'B' : 'P';
+        scores[opposite] += 25;
+        reasons.push(`Dragon ${dragonResult.side} ติดกัน ${dragonResult.count} ตา → เด้งไปฝั่งตรงข้าม`);
     }
-
-    if (recent === 'PPP') {
-        return {
-            side: 'B',
-            confidence: 85,
-            note: 'พบ Player ติดกัน 3 ครั้ง จึงเด้งฝั่งตรงข้ามตาม logic ที่ตั้งไว้',
-        };
+    
+    // 2. Zigzag Pattern Detection (สลับ P-B-P-B)
+    const zigzagResult = detectZigzag();
+    if (zigzagResult.detected) {
+        scores[zigzagResult.nextSide] += 20;
+        reasons.push(`Zigzag Pattern ตรวจพบ → ต่อด้วย ${zigzagResult.nextSide}`);
     }
-
-    if (recent.includes('PBP')) {
-        return {
-            side: 'B',
-            confidence: 65,
-            note: 'แพทเทิร์น 3 ตาล่าสุดคล้ายสลับ จึงเอนฝั่ง Banker',
-        };
+    
+    // 3. Streak Analysis (ตรวจจับแนวโน้มออกฝั่งเดียวกัน)
+    const streakResult = analyzeStreak();
+    if (streakResult.weight > 0) {
+        scores[streakResult.oppositeSide] += streakResult.weight;
+        reasons.push(streakResult.reason);
     }
-
-    const streak = getLatestStreak();
-    if (streak.side && streak.count >= 2 && streak.side !== 'T') {
-        return {
-            side: streak.side === 'P' ? 'B' : 'P',
-            confidence: 72,
-            note: `พบ ${streak.side} ติดกัน ${streak.count} ครั้ง จึงเลือกเด้งอีกฝั่ง`,
-        };
+    
+    // 4. Short-term Trend (5 ตาล่าสุด)
+    const shortTermResult = analyzeShortTerm();
+    if (shortTermResult.weight > 0) {
+        scores[shortTermResult.suggestedSide] += shortTermResult.weight;
+        reasons.push(shortTermResult.reason);
     }
-
-    if (lastFive.filter((x) => x === 'P').length >= 4) {
-        return {
-            side: 'B',
-            confidence: 74,
-            note: '5 ตาล่าสุดออก Player เด่น จึงเอนไป Banker',
-        };
+    
+    // 5. Long-term Probability (สถิติรวมทั้งหมด)
+    const longTermResult = analyzeLongTerm();
+    if (longTermResult.weight > 0) {
+        scores[longTermResult.suggestedSide] += longTermResult.weight;
+        reasons.push(longTermResult.reason);
     }
-
-    if (lastFive.filter((x) => x === 'B').length >= 4) {
-        return {
-            side: 'P',
-            confidence: 74,
-            note: '5 ตาล่าสุดออก Banker เด่น จึงเอนไป Player',
-        };
+    
+    // 6. Repetition Pattern (รูปแบบซ้ำในประวัติ)
+    const repetitionResult = detectRepetition();
+    if (repetitionResult.weight > 0) {
+        scores[repetitionResult.suggestedSide] += repetitionResult.weight;
+        reasons.push(repetitionResult.reason);
     }
-
-    if (pCount > bCount) {
-        return {
-            side: 'B',
-            confidence: 58,
-            note: 'ภาพรวม Player มากกว่า Banker เล็กน้อย จึงเอนฝั่งตรงข้ามแบบเบา ๆ',
-        };
+    
+    // 7. Last 3 Pattern Match
+    const last3Result = analyzeLastThree();
+    if (last3Result.weight > 0) {
+        scores[last3Result.suggestedSide] += last3Result.weight;
+        reasons.push(last3Result.reason);
     }
-
-    if (bCount > pCount) {
-        return {
-            side: 'P',
-            confidence: 58,
-            note: 'ภาพรวม Banker มากกว่า Player เล็กน้อย จึงเอนฝั่งตรงข้ามแบบเบา ๆ',
-        };
+    
+    // คำนวณผลรวม
+    const totalP = scores.P;
+    const totalB = scores.B;
+    
+    let predictedSide;
+    let confidence;
+    
+    if (totalP === totalB) {
+        // คะแนนเท่ากัน ให้เลือกจากฝั่งที่ออกน้อยกว่าในภาพรวม
+        const pCount = countResult('P');
+        const bCount = countResult('B');
+        predictedSide = pCount <= bCount ? 'P' : 'B';
+        confidence = 52;
+        reasons.push('คะแนนเท่ากัน → เลือกฝั่งที่ออกน้อยกว่า');
+    } else {
+        predictedSide = totalP > totalB ? 'P' : 'B';
+        const maxScore = Math.max(totalP, totalB);
+        const minScore = Math.min(totalP, totalB);
+        const diff = maxScore - minScore;
+        
+        // คำนวณ confidence จากส่วนต่าง (scale 50-95%)
+        confidence = Math.min(95, 50 + Math.floor(diff * 0.6));
     }
-
+    
     return {
-        side: Math.random() > 0.5 ? 'P' : 'B',
-        confidence: 50,
-        note: 'ข้อมูลยังไม่ชัดเจน จึงสุ่มฝั่งแบบกลาง ๆ',
+        side: predictedSide,
+        confidence: confidence,
+        note: reasons.length > 0 ? reasons.join(' | ') : 'วิเคราะห์จากข้อมูลทั่วไป'
     };
 }
+
+// ตรวจจับ Dragon (ฝั่งเดียวติดกัน 4+ ตา)
+function detectDragon() {
+    const streak = getLatestStreak();
+    
+    if (streak.count >= 4 && streak.side !== 'T') {
+        return {
+            detected: true,
+            side: streak.side,
+            count: streak.count
+        };
+    }
+    
+    return { detected: false };
+}
+
+// ตรวจจับ Zigzag (P-B-P-B สลับกัน)
+function detectZigzag() {
+    if (state.history.length < 4) return { detected: false };
+    
+    const last4 = state.history.slice(-4).filter(x => x !== 'T');
+    
+    if (last4.length < 4) return { detected: false };
+    
+    // ตรวจสอบว่าสลับกันหรือไม่
+    let isZigzag = true;
+    for (let i = 1; i < last4.length; i++) {
+        if (last4[i] === last4[i - 1]) {
+            isZigzag = false;
+            break;
+        }
+    }
+    
+    if (isZigzag) {
+        const lastSide = last4[last4.length - 1];
+        const nextSide = lastSide === 'P' ? 'B' : 'P';
+        return {
+            detected: true,
+            nextSide: nextSide
+        };
+    }
+    
+    return { detected: false };
+}
+
+// วิเคราะห์ Streak (ถ้าออกฝั่งเดียวติดกัน 2-3 ตา)
+function analyzeStreak() {
+    const streak = getLatestStreak();
+    
+    if (streak.count >= 2 && streak.count <= 3 && streak.side !== 'T') {
+        const oppositeSide = streak.side === 'P' ? 'B' : 'P';
+        return {
+            oppositeSide: oppositeSide,
+            weight: 15,
+            reason: `Streak ${streak.side} x${streak.count} → เตรียมเด้ง`
+        };
+    }
+    
+    return { weight: 0 };
+}
+
+// วิเคราะห์ระยะสั้น (5 ตาล่าสุด)
+function analyzeShortTerm() {
+    if (state.history.length < 5) return { weight: 0 };
+    
+    const last5 = state.history.slice(-5);
+    const pCount = last5.filter(x => x === 'P').length;
+    const bCount = last5.filter(x => x === 'B').length;
+    
+    if (pCount >= 4) {
+        return {
+            suggestedSide: 'B',
+            weight: 18,
+            reason: `5 ตาล่าสุด P ออก ${pCount} ครั้ง → ลดลงไป B`
+        };
+    }
+    
+    if (bCount >= 4) {
+        return {
+            suggestedSide: 'P',
+            weight: 18,
+            reason: `5 ตาล่าสุด B ออก ${bCount} ครั้ง → ลดลงไป P`
+        };
+    }
+    
+    return { weight: 0 };
+}
+
+// วิเคราะห์ระยะยาว (สถิติรวม)
+function analyzeLongTerm() {
+    const pCount = countResult('P');
+    const bCount = countResult('B');
+    const total = state.history.length;
+    
+    if (total < 10) return { weight: 0 };
+    
+    const diff = Math.abs(pCount - bCount);
+    const diffPercent = (diff / total) * 100;
+    
+    // ถ้าห่างกันมาก (>15%) ให้เอนฝั่งที่น้อยกว่า
+    if (diffPercent > 15) {
+        const suggestedSide = pCount < bCount ? 'P' : 'B';
+        return {
+            suggestedSide: suggestedSide,
+            weight: 12,
+            reason: `ภาพรวม P:${pCount} B:${bCount} → สมดุลไปฝั่ง ${suggestedSide}`
+        };
+    }
+    
+    return { weight: 0 };
+}
+
+// ตรวจจับรูปแบบซ้ำ
+function detectRepetition() {
+    if (state.history.length < 8) return { weight: 0 };
+    
+    const last3 = state.history.slice(-3).join('');
+    const beforeLast3 = state.history.slice(-6, -3).join('');
+    
+    // ถ้า 3 ตาล่าสุดเหมือนกับ 3 ตาก่อนหน้า
+    if (last3 === beforeLast3 && state.history.length >= 7) {
+        const next = state.history[state.history.length - 6 + 3]; // ตาที่ตามหลัง pattern เก่า
+        if (next && next !== 'T') {
+            return {
+                suggestedSide: next,
+                weight: 16,
+                reason: `Pattern ${last3} ซ้ำ → ตามด้วย ${next}`
+            };
+        }
+    }
+    
+    return { weight: 0 };
+}
+
+// วิเคราะห์ 3 ตาล่าสุด
+function analyzeLastThree() {
+    const last3 = state.history.slice(-3).join('');
+    
+    // PPP -> B
+    if (last3 === 'PPP') {
+        return {
+            suggestedSide: 'B',
+            weight: 22,
+            reason: 'PPP ติดกัน → เด้ง B'
+        };
+    }
+    
+    // BBB -> P
+    if (last3 === 'BBB') {
+        return {
+            suggestedSide: 'P',
+            weight: 22,
+            reason: 'BBB ติดกัน → เด้ง P'
+        };
+    }
+    
+    // PBP -> B
+    if (last3 === 'PBP') {
+        return {
+            suggestedSide: 'B',
+            weight: 14,
+            reason: 'PBP รูปแบบ → ต่อด้วย B'
+        };
+    }
+    
+    // BPB -> P
+    if (last3 === 'BPB') {
+        return {
+            suggestedSide: 'P',
+            weight: 14,
+            reason: 'BPB รูปแบบ → ต่อด้วย P'
+        };
+    }
+    
+    return { weight: 0 };
+}
+
+// ========================================
+// HELPER FUNCTIONS
+// ========================================
 
 function getLatestStreak() {
     if (state.history.length === 0) {

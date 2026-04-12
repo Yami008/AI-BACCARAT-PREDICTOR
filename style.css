@@ -284,6 +284,12 @@ body {
     display: none !important;
 }
 
+#prediction-note {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    white-space: normal;
+}
+
 .modal-backdrop {
     position: fixed;
     inset: 0;
