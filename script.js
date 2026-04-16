@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'baccarat_analyzer_state_v5';
+const STORAGE_KEY = 'baccarat_analyzer_state_v6';
 
 const DEFAULT_PATTERN_STATS = () => ({
     dragon: { win: 0, lose: 0 },
@@ -406,12 +406,16 @@ function renderPredictionStats() {
     }
 }
 
+// --------------------------------------------------------------------------------
+// ADVANCED PREDICTION SYSTEM
+// --------------------------------------------------------------------------------
+
 function calculateAdvancedPrediction() {
     const scores = { P: 0, B: 0 };
     const reasons = [];
     const usedPatterns = [];
 
-    const recentHistory = getNonTieHistory(15);
+    const recentHistory = getNonTieHistory(20);
     const fullHistory = getNonTieHistory();
 
     const patternResults = [
@@ -420,17 +424,17 @@ function calculateAdvancedPrediction() {
         analyzeStreak(recentHistory),
         analyzeShortTerm(recentHistory),
         analyzeLongTerm(fullHistory),
-        detectRepetition(recentHistory),
-        analyzeLastThree(recentHistory),
-        analyzeTiePattern(state.history)
+        detectRepetition(fullHistory),
+        analyzeLastThree(recentHistory)
     ];
 
     for (const result of patternResults) {
         if (!result || !result.patternName || !result.suggestedSide || !result.baseWeight) continue;
 
+        // นำไปผ่านระบบ Adaptive Weight ประเมินจากความแม่นยำในอดีตของสูตรนี้
         const adaptiveWeight = getAdaptiveWeight(result.patternName, result.baseWeight);
         scores[result.suggestedSide] += adaptiveWeight;
-        reasons.push(`${result.reason} [${result.patternName}: ${adaptiveWeight}]`);
+        reasons.push(`${result.reason}`);
         usedPatterns.push(result.patternName);
     }
 
@@ -441,30 +445,33 @@ function calculateAdvancedPrediction() {
     let confidence;
 
     if (totalP === totalB) {
-        const pCount = countResult('P');
-        const bCount = countResult('B');
-        predictedSide = pCount <= bCount ? 'P' : 'B';
-        confidence = 52;
-        reasons.push('คะแนนเท่ากัน → เลือกฝั่งที่ออกน้อยกว่า');
+        // กรณีคะแนนสูสี แนะนำให้แทงสวนตาล่าสุด (สลับ)
+        const lastSide = getLastNonTieSide();
+        predictedSide = lastSide === 'P' ? 'B' : (lastSide === 'B' ? 'P' : 'P');
+        confidence = 50;
+        reasons.push('คะแนนก้ำกึ่ง แนะนำให้สลับฝั่ง หรือรอดูรอบถัดไป');
     } else {
         predictedSide = totalP > totalB ? 'P' : 'B';
         const maxScore = Math.max(totalP, totalB);
         const totalScore = totalP + totalB;
         const dominance = totalScore > 0 ? maxScore / totalScore : 0.5;
-        confidence = Math.round(50 + (dominance - 0.5) * 80 + Math.min(8, usedPatterns.length * 1.5));
+        
+        // คำนวณความมั่นใจ
+        confidence = Math.round(50 + (dominance - 0.5) * 80 + Math.min(10, usedPatterns.length * 2));
         confidence = Math.min(95, Math.max(50, confidence));
     }
 
+    // จัดการกรณีมีเสมอแทรกเยอะ อาจทำให้การคาดเดาคลาดเคลื่อนได้
     const tieCountRecent = state.history.slice(-10).filter(x => x === 'T').length;
     if (tieCountRecent >= 3) {
-        confidence = Math.max(50, confidence - 5);
-        reasons.push(`มีเสมอ ${tieCountRecent} ครั้งใน 10 ตาล่าสุด → ลดความมั่นใจลง`);
+        confidence = Math.max(50, confidence - 8);
+        reasons.push(`ระวัง: มีเสมอ ${tieCountRecent} ครั้งใน 10 ตาล่าสุด ความผันผวนสูง`);
     }
 
     return {
         side: predictedSide,
         confidence: confidence,
-        note: reasons.length > 0 ? reasons.join(' | ') : 'วิเคราะห์จากข้อมูลทั่วไป',
+        note: reasons.length > 0 ? reasons.join(' | ') : 'วิเคราะห์จากสถิติและข้อมูลภาพรวม',
         usedPatterns: [...new Set(usedPatterns)],
         timestamp: new Date().toISOString(),
         scores: { ...scores }
@@ -473,42 +480,41 @@ function calculateAdvancedPrediction() {
 
 function getAdaptiveWeight(patternName, baseWeight) {
     ensurePatternStat(patternName);
-
     const stat = state.patternStats[patternName];
     const total = stat.win + stat.lose;
 
-    if (total < 5) return baseWeight;
+    // ถ้ายังเก็บข้อมูลไม่พอ ให้อ้างอิงจากค่าน้ำหนักพื้นฐาน
+    if (total < 3) return baseWeight;
 
     const winRate = stat.win / total;
 
-    let scale = 0.6 + (winRate * 0.9);
-    if (winRate >= 0.7) scale += 0.15;
-    if (winRate <= 0.4) scale -= 0.1;
+    // ปรับน้ำหนักตาม Win Rate ของ Pattern นั้นๆ ในโต๊ะนี้
+    let scale = 0.5 + winRate; 
+    if (winRate >= 0.75) scale += 0.2; // แม่นมาก เพิ่มน้ำหนักพิเศษ
+    if (winRate <= 0.35) scale -= 0.3; // ผิดบ่อย ลดความสำคัญลง
 
     return Math.max(1, Math.round(baseWeight * scale));
 }
 
 function detectDragon(history) {
     const streak = getLatestStreak(history);
-
     if (streak.count >= 4 && streak.side !== 'T') {
+        const isTooLong = streak.count >= 6;
         return {
             patternName: 'dragon',
             suggestedSide: streak.side === 'P' ? 'B' : 'P',
-            baseWeight: 25,
-            reason: `Dragon ${streak.side} ติดกัน ${streak.count} ตา → เด้งฝั่งตรงข้าม`
+            baseWeight: isTooLong ? 35 : 25,
+            count: streak.count,
+            reason: `มังกร ${streak.side} ยาว ${streak.count} ตา → มีโอกาสตัดเด้งกลับสูง`
         };
     }
-
     return null;
 }
 
 function detectZigzag(history) {
     if (history.length < 4) return null;
-
     const last4 = history.slice(-4);
-    if (last4.length < 4) return null;
-
+    
     let isZigzag = true;
     for (let i = 1; i < last4.length; i++) {
         if (last4[i] === last4[i - 1]) {
@@ -523,31 +529,27 @@ function detectZigzag(history) {
             patternName: 'zigzag',
             suggestedSide: lastSide === 'P' ? 'B' : 'P',
             baseWeight: 20,
-            reason: 'Zigzag Pattern ตรวจพบ → ต่อฝั่งสลับ'
+            reason: 'ตรวจพบเค้าไพ่ปิงปอง (Zigzag) → เข้าสู่การสลับฝั่ง'
         };
     }
-
     return null;
 }
 
 function analyzeStreak(history) {
     const streak = getLatestStreak(history);
-
     if (streak.count >= 2 && streak.count <= 3 && streak.side !== 'T') {
         return {
             patternName: 'streak',
             suggestedSide: streak.side === 'P' ? 'B' : 'P',
             baseWeight: 15,
-            reason: `Streak ${streak.side} x${streak.count} → เตรียมเด้ง`
+            reason: `การเกาะกลุ่มฝั่ง ${streak.side} x${streak.count} → เอนเอียงไปฝั่งตรงข้าม`
         };
     }
-
     return null;
 }
 
 function analyzeShortTerm(history) {
     if (history.length < 5) return null;
-
     const last5 = history.slice(-5);
     const pCount = last5.filter(x => x === 'P').length;
     const bCount = last5.filter(x => x === 'B').length;
@@ -557,56 +559,50 @@ function analyzeShortTerm(history) {
             patternName: 'shortTerm',
             suggestedSide: 'B',
             baseWeight: 18,
-            reason: `5 ตาล่าสุด P ออก ${pCount} ครั้ง → เอน B`
+            reason: `ระยะสั้น P นำ (${pCount}/5) → เตรียมปรับสมดุลเอนไปฝั่ง B`
         };
     }
-
     if (bCount >= 4) {
         return {
             patternName: 'shortTerm',
             suggestedSide: 'P',
             baseWeight: 18,
-            reason: `5 ตาล่าสุด B ออก ${bCount} ครั้ง → เอน P`
+            reason: `ระยะสั้น B นำ (${bCount}/5) → เตรียมปรับสมดุลเอนไปฝั่ง P`
         };
     }
-
     return null;
 }
 
 function analyzeLongTerm(history) {
     if (history.length < 10) return null;
-
     const pCount = history.filter(x => x === 'P').length;
     const bCount = history.filter(x => x === 'B').length;
     const total = history.length;
-
+    
     const diff = Math.abs(pCount - bCount);
     const diffPercent = (diff / total) * 100;
 
     if (diffPercent > 15) {
+        const weakerSide = pCount < bCount ? 'P' : 'B';
         return {
             patternName: 'longTerm',
-            suggestedSide: pCount < bCount ? 'P' : 'B',
+            suggestedSide: weakerSide,
             baseWeight: 12,
-            reason: `ภาพรวม P:${pCount} B:${bCount} → สมดุลไปฝั่ง ${pCount < bCount ? 'P' : 'B'}`
+            reason: `ภาพรวมสถิติฝั่ง ${weakerSide} ออกน้อยกว่าปกติ → ช่วยถ่วงดุลความน่าจะเป็น (LLN)`
         };
     }
-
     return null;
 }
 
 function detectRepetition(history) {
     if (history.length < 6) return null;
-
     const pattern = history.slice(-3).join('');
     const followUps = [];
 
     for (let i = 0; i <= history.length - 6; i++) {
         if (history.slice(i, i + 3).join('') === pattern) {
             const next = history[i + 3];
-            if (next === 'P' || next === 'B') {
-                followUps.push(next);
-            }
+            if (next === 'P' || next === 'B') followUps.push(next);
         }
     }
 
@@ -617,81 +613,32 @@ function detectRepetition(history) {
 
     if (pCount === bCount) return null;
 
+    const dominantNext = pCount > bCount ? 'P' : 'B';
     return {
         patternName: 'repetition',
-        suggestedSide: pCount > bCount ? 'P' : 'B',
+        suggestedSide: dominantNext,
         baseWeight: 16,
-        reason: `Pattern ${pattern} เคยตามด้วย ${pCount > bCount ? 'P' : 'B'} มากกว่า`
+        reason: `รูปแบบ ${pattern} เคยเกิดขึ้น และมักจะตามด้วย ${dominantNext}`
     };
 }
 
 function analyzeLastThree(history) {
     if (history.length < 3) return null;
-
     const last3 = history.slice(-3).join('');
 
     if (last3 === 'PPP') {
-        return {
-            patternName: 'last3',
-            suggestedSide: 'B',
-            baseWeight: 22,
-            reason: 'PPP ติดกัน → เด้ง B'
-        };
+        return { patternName: 'last3', suggestedSide: 'B', baseWeight: 22, reason: 'PPP ติดกัน → ต้านทานมังกร เด้งกลับ B' };
     }
-
     if (last3 === 'BBB') {
-        return {
-            patternName: 'last3',
-            suggestedSide: 'P',
-            baseWeight: 22,
-            reason: 'BBB ติดกัน → เด้ง P'
-        };
+        return { patternName: 'last3', suggestedSide: 'P', baseWeight: 22, reason: 'BBB ติดกัน → ต้านทานมังกร เด้งกลับ P' };
     }
-
     if (last3 === 'PBP') {
-        return {
-            patternName: 'last3',
-            suggestedSide: 'B',
-            baseWeight: 14,
-            reason: 'PBP รูปแบบ → ต่อด้วย B'
-        };
+        return { patternName: 'last3', suggestedSide: 'B', baseWeight: 14, reason: 'PBP เค้าไพ่ 3 ตัว → เข้าสูตร B' };
     }
-
     if (last3 === 'BPB') {
-        return {
-            patternName: 'last3',
-            suggestedSide: 'P',
-            baseWeight: 14,
-            reason: 'BPB รูปแบบ → ต่อด้วย P'
-        };
+        return { patternName: 'last3', suggestedSide: 'P', baseWeight: 14, reason: 'BPB เค้าไพ่ 3 ตัว → เข้าสูตร P' };
     }
-
     return null;
-}
-
-function analyzeTiePattern(history) {
-    if (history.length < 3) return null;
-
-    const last5 = history.slice(-5);
-    const tieCount = last5.filter(x => x === 'T').length;
-
-    if (tieCount === 0) return null;
-
-    const lastNonTie = getLastNonTieSide(history);
-    if (!lastNonTie) return null;
-
-    let baseWeight = 0;
-
-    if (tieCount === 1) baseWeight = 4;
-    else if (tieCount === 2) baseWeight = 7;
-    else baseWeight = 10;
-
-    return {
-        patternName: 'tie',
-        suggestedSide: lastNonTie,
-        baseWeight,
-        reason: `พบเสมอ ${tieCount} ครั้งใน 5 ตาล่าสุด → ใช้ฝั่งก่อนหน้า (${lastNonTie}) เป็นแนวโน้ม`
-    };
 }
 
 function getLastNonTieSide(history = state.history) {
@@ -710,21 +657,15 @@ function getNonTieHistory(limit = null) {
 }
 
 function getLatestStreak(history = getNonTieHistory()) {
-    if (history.length === 0) {
-        return { side: null, count: 0 };
-    }
-
+    if (history.length === 0) return { side: null, count: 0 };
+    
     const last = history[history.length - 1];
     let count = 0;
-
+    
     for (let i = history.length - 1; i >= 0; i--) {
-        if (history[i] === last) {
-            count++;
-        } else {
-            break;
-        }
+        if (history[i] === last) count++;
+        else break;
     }
-
     return { side: last, count };
 }
 
