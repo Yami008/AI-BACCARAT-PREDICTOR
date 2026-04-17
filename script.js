@@ -367,7 +367,7 @@ function renderPredictionStats() {
 }
 
 // --------------------------------------------------------------------------------
-// ADVANCED PREDICTION SYSTEM V7 (Trend Follower & Safe Mode)
+// ADVANCED PREDICTION SYSTEM V7.1 (Aggressive Trend Follower - ลดการรอ)
 // --------------------------------------------------------------------------------
 
 function calculateAdvancedPrediction() {
@@ -402,41 +402,51 @@ function calculateAdvancedPrediction() {
     let predictedSide;
     let confidence;
 
-    // ระบบ SAFE MODE: ถ้าน้ำหนักคะแนนต่างกันน้อยกว่า 15 แต้ม แสดงว่าสถิติตีกันเอง ให้ข้าม
+    // ปรับลดการรอลง: ถ้าไม่มีข้อมูลคะแนนเลย
     if (totalP === 0 && totalB === 0) {
-        predictedSide = 'WAIT';
-        confidence = 0;
-        reasons.push('ไม่มีข้อมูลเพียงพอ หรือกราฟแกว่ง แนะนำให้ "ข้ามตา" (Skip)');
-    } else if (diff < 15) {
-        predictedSide = 'WAIT';
-        confidence = 50;
-        reasons.push('สัญญาณขัดแย้งกัน (P และ B สูสีกันมาก) เสี่ยงเกินไป แนะนำให้ "ข้ามตา" (Skip)');
-    } else {
-        predictedSide = totalP > totalB ? 'P' : 'B';
-        const maxScore = Math.max(totalP, totalB);
-        const totalScore = totalP + totalB;
-        const dominance = totalScore > 0 ? maxScore / totalScore : 0.5;
-        
-        confidence = Math.round(50 + (dominance - 0.5) * 80 + Math.min(10, usedPatterns.length * 2));
-        confidence = Math.min(95, Math.max(60, confidence));
-        
-        // กรองอีกชั้น ถ้าความมั่นใจต่ำกว่า 65 ให้บังคับข้าม
-        if (confidence < 65) {
+        const lastSide = getLastNonTieSide();
+        if (lastSide) {
+            predictedSide = lastSide;
+            confidence = 51;
+            reasons.push('ไม่มีสถิติชัดเจน → เลือกลงตามสีล่าสุดไปก่อน');
+        } else {
             predictedSide = 'WAIT';
-            reasons.push('AI ประเมินความแม่นยำต่ำกว่าเกณฑ์ 65% แนะนำให้รอดูเทรนด์ใหม่');
+            confidence = 0;
+            reasons.push('ยังไม่มีข้อมูลประวัติ → ข้ามตาแรก (Skip)');
+        }
+    } else {
+        // กรณีคะแนนชนกันสูสี ให้เอนเอียงไปตามโมเมนตัมสีล่าสุด
+        if (totalP === totalB) {
+            predictedSide = getLastNonTieSide() || 'P';
+            confidence = 52;
+            reasons.push('สถิติตีกันสูสีมาก → ตัดสินใจไหลตามสีล่าสุด');
+        } else {
+            predictedSide = totalP > totalB ? 'P' : 'B';
+            const maxScore = Math.max(totalP, totalB);
+            const totalScore = totalP + totalB;
+            const dominance = totalScore > 0 ? maxScore / totalScore : 0.5;
+            
+            // คำนวณความมั่นใจ
+            confidence = Math.round(50 + (dominance - 0.5) * 80 + Math.min(10, usedPatterns.length * 2));
+            confidence = Math.min(95, Math.max(51, confidence));
+        }
+        
+        // กรองชั้นสุดท้าย: จะรอ (WAIT) ก็ต่อเมื่อ ความมั่นใจต่ำกว่า 55% และคะแนนสูสีกันมากๆ (< 5 แต้ม)
+        if (confidence < 55 && diff <= 5) {
+            predictedSide = 'WAIT';
+            reasons.push('สถิติขัดแย้งกันอย่างหนัก ความมั่นใจต่ำมาก → ข้ามเพื่อเซฟทุน');
         }
     }
 
     return {
         side: predictedSide,
         confidence: confidence,
-        note: reasons.length > 0 ? reasons.join(' | ') : 'กำลังรวบรวมสถิติ...',
+        note: reasons.length > 0 ? reasons.join(' | ') : 'วิเคราะห์จากภาพรวมสถิติ',
         usedPatterns: [...new Set(usedPatterns)],
         timestamp: new Date().toISOString(),
         scores: { ...scores }
     };
 }
-
 function getAdaptiveWeight(patternName, baseWeight) {
     ensurePatternStat(patternName);
     const stat = state.patternStats[patternName];
